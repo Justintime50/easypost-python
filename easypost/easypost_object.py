@@ -1,3 +1,14 @@
+import datetime
+import json
+import platform
+import re
+import six
+import ssl
+import time
+import types
+from six.moves.urllib.parse import urlencode, quote_plus, urlparse
+
+
 class EasyPostObject(object):
     def __init__(self, easypost_id=None, api_key=None, parent=None, name=None, **params):
         self.__dict__['_values'] = set()
@@ -77,7 +88,7 @@ class EasyPostObject(object):
 
             if k in self._immutable_values:
                 continue
-            self.__dict__[k] = convert_to_easypost_object(v, api_key, self, k)
+            self.__dict__[k] = EasyPostObject.convert_to_easypost_object(v, api_key, self, k)
             self._values.add(k)
             self._transient_values.discard(k)
             self._unsaved_values.discard(k)
@@ -125,6 +136,78 @@ class EasyPostObject(object):
             d[k] = v
         return d
 
+    def convert_to_easypost_object(self, response, api_key, parent=None, name=None):
+        types = {
+            'Address': Address,
+            'ScanForm': ScanForm,
+            'CustomsItem': CustomsItem,
+            'CustomsInfo': CustomsInfo,
+            'Parcel': Parcel,
+            'Shipment': Shipment,
+            'Insurance': Insurance,
+            'Rate': Rate,
+            'Refund': Refund,
+            'Batch': Batch,
+            'Event': Event,
+            'Tracker': Tracker,
+            'Pickup': Pickup,
+            'Order': Order,
+            'PickupRate': PickupRate,
+            'PostageLabel': PostageLabel,
+            'CarrierAccount': CarrierAccount,
+            'User': User,
+            'Report': Report,
+            'ShipmentReport': Report,
+            'PaymentLogReport': Report,
+            'TrackerReport': Report,
+            'RefundReport': Report,
+            'ShipmentInvoiceReport': Report,
+            'Webhook': Webhook
+        }
+
+        prefixes = {
+            'adr': Address,
+            'sf': ScanForm,
+            'evt': Event,
+            'cstitem': CustomsItem,
+            'cstinfo': CustomsInfo,
+            'prcl': Parcel,
+            'shp': Shipment,
+            'ins': Insurance,
+            'rate': Rate,
+            'rfnd': Refund,
+            'batch': Batch,
+            'trk': Tracker,
+            'order': Order,
+            'pickup': Pickup,
+            'pickuprate': PickupRate,
+            'pl': PostageLabel,
+            'ca': CarrierAccount,
+            'user': User,
+            'shprep': Report,
+            'plrep': Report,
+            'trkrep': Report,
+            'refrep': Report,
+            'shpinvrep': Report,
+            'hook': Webhook
+        }
+
+        if isinstance(response, list):
+            return [EasyPostObject.convert_to_easypost_object(r, api_key, parent) for r in response]
+        elif isinstance(response, dict):
+            response = response.copy()
+            cls_name = response.get('object', EasyPostObject)
+            cls_id = response.get('id', None)
+            if isinstance(cls_name, six.string_types):
+                cls = types.get(cls_name, EasyPostObject)
+            elif cls_id is not None:
+                cls = prefixes.get(cls_id[0:cls_id.find('_')], EasyPostObject)
+            else:
+                cls = EasyPostObject
+            return cls.construct_from(response, api_key, parent, name)
+        else:
+            return response
+
 
 class EasyPostObjectEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -132,53 +215,3 @@ class EasyPostObjectEncoder(json.JSONEncoder):
             return obj.to_dict()
         else:
             return json.JSONEncoder.default(self, obj)
-
-
-class Resource(EasyPostObject):
-    def _ident(self):
-        return [self.get('id')]
-
-    @classmethod
-    def retrieve(cls, easypost_id, api_key=None, **params):
-        try:
-            easypost_id = easypost_id['id']
-        except (KeyError, TypeError):
-            pass
-
-        instance = cls(easypost_id, api_key, **params)
-        instance.refresh()
-        return instance
-
-    def refresh(self):
-        requestor = Requestor(self._api_key)
-        url = self.instance_url()
-        response, api_key = requestor.request('get', url, self._retrieve_params)
-        self.refresh_from(response, api_key)
-        return self
-
-    @classmethod
-    def class_name(cls):
-        if cls == Resource:
-            raise NotImplementedError('Resource is an abstract class. '
-                                      'You should perform actions on its subclasses.')
-
-        cls_name = six.text_type(cls.__name__)
-        cls_name = cls_name[0:1] + re.sub(r'([A-Z])', r'_\1', cls_name[1:])
-        return "%s" % cls_name.lower()
-
-    @classmethod
-    def class_url(cls):
-        cls_name = cls.class_name()
-        if cls_name[-1:] == "s" or cls_name[-1:] == "h":
-            return "/%ses" % cls_name
-        else:
-            return "/%ss" % cls_name
-
-    def instance_url(self):
-        easypost_id = self.get('id')
-        if not easypost_id:
-            raise Error('%s instance has invalid ID: %r' % (type(self).__name__, easypost_id))
-        easypost_id = Requestor._utf8(easypost_id)
-        base = self.class_url()
-        param = quote_plus(easypost_id)
-        return "{base}/{param}".format(base=base, param=param)
